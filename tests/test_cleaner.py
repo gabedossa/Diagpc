@@ -88,7 +88,7 @@ def test_dangerous_roots_are_refused():
 
 def test_unsafe_root_is_not_scanned(monkeypatch, cache: Path):
     make_file(cache / "a.tmp")
-    monkeypatch.setattr(cleaner, "is_safe_root", lambda root: False)
+    monkeypatch.setattr(cleaner, "_root_problem", lambda root, single_file=False: "recusado")
     assert cleaner.scan_target(target_for(cache)).files == 0
 
 

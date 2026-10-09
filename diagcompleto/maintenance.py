@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from .utils import CommandError, is_admin, run_command_stream, run_powershell, system_tool
+from .utils import CommandError, is_admin, powershell_args, run_command_stream, run_powershell, system_tool
 
 log = logging.getLogger("DiagCompleto.maintenance")
 
@@ -47,10 +47,10 @@ ACTIONS = [
         "optimize_drives", "Otimizar unidades",
         "TRIM em SSDs e desfragmentação em HDs — o Windows escolhe o adequado para cada unidade.",
         "1 min (SSD) a 1 h (HD)",
-        lambda: ["powershell.exe", "-NoProfile", "-Command",
-                 "Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | "
-                 "ForEach-Object { Write-Output \"Unidade $($_.DriveLetter):\"; "
-                 "Optimize-Volume -DriveLetter $_.DriveLetter -Verbose 4>&1 }"]),
+        lambda: powershell_args(
+            "Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | "
+            "ForEach-Object { Write-Output \"Unidade $($_.DriveLetter):\"; "
+            "Optimize-Volume -DriveLetter $_.DriveLetter -Verbose 4>&1 }")),
     MaintenanceAction(
         "flush_dns", "Limpar cache DNS",
         "Resolve problemas de sites que não abrem após mudanças de rede.",

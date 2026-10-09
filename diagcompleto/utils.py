@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from . import winsec
+
 APP_NAME = "DiagCompleto"
 CREATE_NO_WINDOW = 0x08000000
 
@@ -26,17 +28,30 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def app_data_dir() -> Path:
-    """Pasta de dados do programa (%LOCALAPPDATA%\\DiagCompleto)."""
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    path = Path(base) / APP_NAME
+def user_data_dir() -> Path:
+    """Pasta de dados do usuário (%LOCALAPPDATA%\\DiagCompleto), obtida pela API do Windows."""
+    path = Path(winsec.local_appdata()) / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def app_data_dir() -> Path:
+    """Pasta de dados do programa.
+
+    Elevado, o programa não escreve em pastas que um processo comum consegue manipular
+    (uma junção ali levaria a escrita de administrador para qualquer lugar). Usa então
+    %ProgramData%\\DiagCompleto, com permissões que só administradores alteram.
+    """
+    if is_admin():
+        return winsec.locked_admin_dir(APP_NAME)
+    return user_data_dir()
 
 
 def setup_logging() -> Path:
     log_dir = app_data_dir() / "logs"
     log_dir.mkdir(exist_ok=True)
+    if not winsec.real_dir(log_dir):
+        raise PermissionError(f"Pasta de logs inválida (junção ou link): {log_dir}")
     log_file = log_dir / "diagcompleto.log"
     logger = logging.getLogger(APP_NAME)
     if not logger.handlers:
@@ -64,8 +79,20 @@ def relaunch_as_admin() -> bool:
         params = subprocess.list2cmdline(sys.argv[1:])
     else:
         params = subprocess.list2cmdline([os.path.abspath(sys.argv[0]), *sys.argv[1:]])
-    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+    # Pasta de trabalho no System32: o processo elevado não procura executáveis e DLLs
+    # na pasta do usuário de onde foi chamado.
+    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, winsec.system_dir(), 1)
     return result > 32
+
+
+def open_file(path: Path) -> None:
+    """Abre um arquivo no programa padrão. Elevado, delega ao Explorador para que o
+    navegador não rode como administrador."""
+    if is_admin():
+        subprocess.Popen([os.path.join(winsec.windows_dir(), "explorer.exe"), str(path)],
+                         env=winsec.safe_env(), cwd=winsec.system_dir())
+    else:
+        os.startfile(path)
 
 
 # --------------------------------------------------------------------------- comandos
@@ -101,8 +128,11 @@ def _decode_line(line: bytes) -> str:
 
 
 def system_tool(name: str) -> str:
-    """Caminho de uma ferramenta do System32, contornando o redirecionamento WOW64."""
-    root = os.environ.get("SystemRoot", r"C:\Windows")
+    """Caminho de uma ferramenta do System32, contornando o redirecionamento WOW64.
+
+    A pasta do Windows vem da API, não de %SystemRoot% (que o usuário pode alterar).
+    """
+    root = winsec.windows_dir()
     sysnative = os.path.join(root, "Sysnative")
     folder = sysnative if os.path.isdir(sysnative) else os.path.join(root, "System32")
     return os.path.join(folder, name)
@@ -114,6 +144,8 @@ def run_command(args: list[str], timeout: int = 300) -> tuple[int, str]:
         capture_output=True,
         timeout=timeout,
         creationflags=CREATE_NO_WINDOW if is_windows() else 0,
+        env=winsec.safe_env(),
+        cwd=winsec.system_dir(),
     )
     return completed.returncode, decode_output(completed.stdout) + decode_output(completed.stderr)
 
@@ -125,6 +157,8 @@ def run_command_stream(args: list[str], on_line: Callable[[str], None]) -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         creationflags=CREATE_NO_WINDOW if is_windows() else 0,
+        env=winsec.safe_env(),
+        cwd=winsec.system_dir(),
     )
     assert proc.stdout is not None
     buffer = b""
@@ -154,15 +188,30 @@ def _clean_clixml(text: str) -> str:
     return "".join(parts).replace("_x000D__x000A_", "\n").strip()
 
 
+# Fixa os módulos nas pastas do sistema antes de qualquer cmdlet: o PowerShell carrega
+# módulos automaticamente e a pasta Documentos do usuário vem primeiro; um módulo plantado
+# ali com o nome de um cmdlet (ex.: Get-PhysicalDisk) rodaria como administrador.
+_PS_PREFIX = (
+    r"$env:PSModulePath=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell\v1.0\Modules');"
+    "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+)
+
+
+def powershell_args(script: str) -> list[str]:
+    """Linha de comando do PowerShell do sistema, sem perfil nem módulos do usuário."""
+    encoded = base64.b64encode((_PS_PREFIX + script).encode("utf-16-le")).decode("ascii")
+    return [system_tool(r"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
+
+
 def run_powershell(script: str, timeout: int = 180) -> str:
-    prefix = "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-    encoded = base64.b64encode((prefix + script).encode("utf-16-le")).decode("ascii")
     completed = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-         "-EncodedCommand", encoded],
+        powershell_args(script),
         capture_output=True,
         timeout=timeout,
         creationflags=CREATE_NO_WINDOW if is_windows() else 0,
+        env=winsec.safe_env(),
+        cwd=winsec.system_dir(),
     )
     stdout = completed.stdout.decode("utf-8", errors="replace")
     if completed.returncode != 0:

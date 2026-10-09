@@ -32,6 +32,12 @@ cd Diagpc
 
 Não há nada para instalar: basta ter o Python.
 
+> **Importante:** o `Executar.bat` roda como administrador o código que está na pasta do programa.
+> Coloque essa pasta num local que só administradores podem alterar, como
+> `C:\Program Files\DiagCompleto`. Se ela ficar em Documentos ou Downloads, qualquer programa que
+> rode como você pode editar os arquivos `.py` e esperar você abrir o DiagCompleto como administrador.
+> O mesmo vale para o Python: prefira a instalação "para todos os usuários".
+
 ## Como usar
 
 ### Interface gráfica
@@ -86,13 +92,33 @@ O programa funciona sem administrador, mas com limitações:
 
 ### Otimizações
 
-- Antes de qualquer mudança, o valor original de cada chave é salvo em
-  `%LOCALAPPDATA%\DiagCompleto\tweaks_backup.json`.
+- Antes de qualquer mudança, o valor original de cada chave é salvo em `tweaks_backup.json`
+  (veja [Arquivos gerados](#arquivos-gerados)).
 - Reverter restaura exatamente o estado anterior, inclusive apagando valores que não existiam.
   Reaplicar nunca sobrescreve o backup original.
+- O backup é conferido antes de ser restaurado: chave e nome vêm sempre da definição do ajuste,
+  e tipo e valor precisam ser válidos. Um backup adulterado é recusado e nada é alterado.
 - Há a opção de criar um ponto de restauração do Windows antes de aplicar.
 - Programas de inicialização usam o mesmo mecanismo do Gerenciador de Tarefas (`StartupApproved`).
   Nada é apagado.
+
+### Proteção quando roda como administrador
+
+O programa parte do princípio de que outro software rodando como o usuário (sem elevação) pode
+tentar usá-lo para ganhar privilégios. Por isso, quando elevado:
+
+- **Pastas vêm das APIs do Windows**, nunca de variáveis como `%TEMP%` ou `%SystemRoot%`, que o
+  usuário pode apontar para qualquer lugar. A limpeza só age dentro do perfil do usuário, da pasta
+  do Windows e do ProgramData, e recusa raízes que passem por junção ou link.
+- **Cada exclusão é conferida pelo handle**: o arquivo é aberto, o caminho real é verificado e só
+  então ele é apagado. Trocar uma subpasta por junção no meio da limpeza não leva a exclusão para
+  fora da pasta.
+- **Ferramentas do sistema são chamadas por caminho completo** (PowerShell, DISM, SFC, powercfg),
+  com `PATH` e `PSModulePath` restritos às pastas do Windows. Um `powershell.exe` ou um módulo
+  plantado em pastas do usuário não é executado.
+- **Dados ficam em `%ProgramData%\DiagCompleto`**, uma pasta criada já protegida, que só
+  administradores alteram. Se ela existir sem essa proteção, é renomeada e recriada.
+- **Relatórios abrem no navegador sem elevação**, via Explorador.
 
 ### O que o DiagCompleto deliberadamente **não** faz
 
@@ -117,6 +143,7 @@ diagcompleto/
 ├── maintenance.py            DISM, SFC, otimização de unidades, ponto de restauração
 ├── report.py                 relatório HTML
 ├── utils.py                  privilégios, execução de comandos, formatação e logging
+├── winsec.py                 pastas confiáveis, exclusão segura e pasta protegida (modo admin)
 ├── gui.py                    interface tkinter
 └── cli.py                    linha de comando
 tests/                        testes (pytest)
@@ -124,11 +151,15 @@ tests/                        testes (pytest)
 
 ### Arquivos gerados
 
-| O quê | Onde |
+A pasta depende de como o programa foi aberto:
+
+| Aberto como | Pasta de dados |
 | --- | --- |
-| Logs | `%LOCALAPPDATA%\DiagCompleto\logs` |
-| Relatórios HTML | `%LOCALAPPDATA%\DiagCompleto\relatorios` |
-| Backup das otimizações | `%LOCALAPPDATA%\DiagCompleto\tweaks_backup.json` |
+| Administrador | `%ProgramData%\DiagCompleto` (protegida) |
+| Usuário comum | `%LOCALAPPDATA%\DiagCompleto` |
+
+Dentro dela ficam `logs\`, `relatorios\` e `tweaks_backup.json`. Como administrador, um backup antigo
+em `%LOCALAPPDATA%` ainda é lido (e conferido), mas nunca alterado.
 
 ## Testes
 
@@ -140,4 +171,6 @@ python -m pytest
 Os testes não mexem no seu sistema:
 
 - os de limpeza usam pastas temporárias;
-- os de otimização usam uma chave de teste própria, `HKCU\Software\DiagCompletoTest`, removida ao final.
+- os de otimização usam uma chave de teste própria, `HKCU\Software\DiagCompletoTest`, removida ao final;
+- os de segurança (`tests/test_security.py`) simulam os ataques: junção trocada no meio da limpeza,
+  `%TEMP%` desviado, backup adulterado, módulo do PowerShell plantado e ACL fraca.

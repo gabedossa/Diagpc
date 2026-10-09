@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import os
 import queue
 import threading
 import tkinter as tk
@@ -12,7 +11,7 @@ from tkinter.scrolledtext import ScrolledText
 from typing import Any, Callable
 
 from . import __version__, cleaner, health, maintenance, report, startup, tweaks
-from .utils import format_bytes, is_admin, relaunch_as_admin
+from .utils import format_bytes, is_admin, open_file, relaunch_as_admin
 
 log = logging.getLogger("DiagCompleto.gui")
 
@@ -221,7 +220,7 @@ class HealthTab(ttk.Frame):
         if not self.report:
             return
         path = report.save_report(self.report)
-        os.startfile(path)  # abre no navegador padrão
+        open_file(path)  # abre no navegador padrão, sem elevação
         self.app.status_var.set(f"Relatório salvo em {path}")
 
 

@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 from . import cleaner, health, report, startup, tweaks
-from .utils import format_bytes, is_admin
+from .utils import format_bytes, is_admin, open_file
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -19,7 +18,7 @@ def cmd_health(args: argparse.Namespace) -> int:
     if args.html:
         path = report.save_report(result)
         print(f"\nRelatório salvo em {path}")
-        os.startfile(path)
+        open_file(path)
     return 0
 
 

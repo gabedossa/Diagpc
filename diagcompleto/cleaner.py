@@ -19,11 +19,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
+from . import winsec
 from .utils import is_admin
 
 log = logging.getLogger("DiagCompleto.cleaner")
 
-FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+FILE_ATTRIBUTE_REPARSE_POINT = winsec.FILE_ATTRIBUTE_REPARSE_POINT
 
 
 @dataclass(frozen=True)
@@ -75,33 +76,37 @@ class CleanTarget:
 
 # --------------------------------------------------------------------------- segurança
 
-def _env_path(name: str, fallback: str = "") -> Path | None:
-    value = os.environ.get(name, fallback)
-    return Path(value) if value else None
-
-
 def _protected_paths() -> set[str]:
-    paths = set()
+    # Das APIs do Windows; variáveis de ambiente só acrescentam (nunca afrouxam) a lista.
+    paths = set(winsec.protected_dirs())
     for env in ("SystemDrive", "SystemRoot", "USERPROFILE", "ProgramFiles", "ProgramFiles(x86)",
                 "ProgramData", "APPDATA", "LOCALAPPDATA", "PUBLIC"):
         value = os.environ.get(env)
         if value:
-            paths.add(os.path.normcase(os.path.abspath(value + ("\\" if value.endswith(":") else ""))))
-    system_root = os.environ.get("SystemRoot")
-    if system_root:
-        paths.add(os.path.normcase(os.path.join(system_root, "System32")))
-        paths.add(os.path.normcase(os.path.join(system_root, "SysWOW64")))
+            paths.add(winsec.norm(value + ("\\" if value.endswith(":") else "")))
     return paths
 
 
+def _root_problem(root: Path, single_file: bool = False) -> str | None:
+    """Motivo para recusar a raiz, ou None se ela for segura."""
+    real = winsec.real_dir(root)
+    if real is None:
+        return "inexistente ou passa por junção/link"
+    if not any(winsec.is_within(real, base) for base in winsec.allowed_bases()):
+        return "fora do perfil do usuário, da pasta do Windows e do ProgramData"
+    if single_file:
+        return None
+    if real in _protected_paths():
+        return "pasta protegida"
+    _, tail = os.path.splitdrive(real)
+    if len([part for part in tail.split(os.sep) if part]) < 2:
+        return "rasa demais"
+    return None
+
+
 def is_safe_root(root: Path) -> bool:
-    """Recusa raízes perigosas (raiz do disco, Windows, perfil do usuário etc.)."""
-    absolute = os.path.normcase(os.path.abspath(root))
-    if absolute in _protected_paths():
-        return False
-    drive, tail = os.path.splitdrive(absolute)
-    depth = len([part for part in tail.split(os.sep) if part])
-    return depth >= 2
+    """Recusa raízes perigosas (raiz do disco, Windows, perfil do usuário, junções etc.)."""
+    return _root_problem(root) is None
 
 
 def _is_reparse_point(st: os.stat_result) -> bool:
@@ -120,8 +125,9 @@ def iter_files(location: Location, min_age_hours: float = 0,
     """Percorre os arquivos elegíveis de um local sem seguir links/junções."""
     if not location.root.is_dir():
         return
-    if not location.single_file and not is_safe_root(location.root):
-        log.warning("Local recusado por segurança: %s", location.root)
+    problem = _root_problem(location.root, location.single_file)
+    if problem:
+        log.warning("Local recusado por segurança (%s): %s", problem, location.root)
         return
     now = now or time.time()
     min_age = min_age_hours * 3600
@@ -154,21 +160,10 @@ def iter_files(location: Location, min_age_hours: float = 0,
             yield Path(entry.path), st.st_size
 
 
-def _delete_file(path: Path) -> bool:
-    try:
-        os.remove(path)
-        return True
-    except PermissionError:
-        try:
-            os.chmod(path, stat.S_IWRITE)
-            os.remove(path)
-            return True
-        except OSError:
-            return False
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
+def _delete_file(path: Path, root: Path) -> bool:
+    # Exclusão pelo handle, conferindo o caminho real: se uma pasta intermediária for trocada
+    # por junção depois da varredura, o arquivo de fora da raiz não é apagado.
+    return winsec.delete_within(path, winsec.norm(root))
 
 
 def scan_target(target: CleanTarget) -> ScanResult:
@@ -200,27 +195,28 @@ def clean_target(target: CleanTarget) -> CleanResult:
     for location in target.locations():
         dirs: list[Path] = []
         for path, size in list(iter_files(location, target.min_age_hours, now, dirs)):
-            if _delete_file(path):
+            if _delete_file(path, location.root):
                 result.freed += size
                 result.deleted += 1
             else:
                 result.skipped += 1
         if location.removes_dirs:
-            _remove_empty_dirs(dirs, target.min_age_hours, now)
+            _remove_empty_dirs(dirs, location.root, target.min_age_hours, now)
     log.info("Limpeza %s: %d arquivos, %d bytes, %d ignorados",
              target.id, result.deleted, result.freed, result.skipped)
     return result
 
 
-def _remove_empty_dirs(dirs: list[Path], min_age_hours: float, now: float) -> None:
+def _remove_empty_dirs(dirs: list[Path], root: Path, min_age_hours: float, now: float) -> None:
     # Do mais profundo para o mais raso; a raiz do local não está na lista.
+    real_root = winsec.norm(root)
     for directory in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
         try:
-            if min_age_hours and now - directory.stat().st_mtime < min_age_hours * 3600:
+            if min_age_hours and now - os.lstat(directory).st_mtime < min_age_hours * 3600:
                 continue
-            directory.rmdir()  # só funciona se estiver vazia
         except OSError:
             continue
+        winsec.delete_within(directory, real_root, is_dir=True)  # só funciona se estiver vazia
 
 
 # --------------------------------------------------------------------------- Lixeira
@@ -268,9 +264,7 @@ def _chromium_caches(base: Path | None) -> list[Location]:
 
 
 def _browser_locations() -> list[Location]:
-    local = _env_path("LOCALAPPDATA")
-    if not local:
-        return []
+    local = Path(winsec.local_appdata())
     locations = []
     for vendor in (r"Google\Chrome", r"Microsoft\Edge", r"BraveSoftware\Brave-Browser", r"Vivaldi"):
         locations += _chromium_caches(local / vendor / "User Data")
@@ -293,20 +287,22 @@ def _existing(*paths: Path | None, pattern: str = "*", recursive: bool = True) -
 
 
 def _windir() -> Path:
-    return Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    return Path(winsec.windows_dir())
 
 
 def _program_data() -> Path:
-    return Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+    return Path(winsec.program_data())
 
 
 def build_targets() -> list[CleanTarget]:
-    local = _env_path("LOCALAPPDATA")
-    temp = _env_path("TEMP")
+    # Caminhos das APIs do Windows: %TEMP% e afins podem ser apontados pelo usuário para
+    # qualquer pasta, e a limpeza roda como administrador.
+    local = Path(winsec.local_appdata())
+    temp = local / "Temp"
     return [
         CleanTarget(
             "user_temp", "Arquivos temporários do usuário",
-            "Pasta %TEMP%. Arquivos com menos de 24 h são preservados.",
+            "Pasta Temp do usuário. Arquivos com menos de 24 h são preservados.",
             lambda: _existing(temp), min_age_hours=24),
         CleanTarget(
             "windows_temp", "Arquivos temporários do Windows",

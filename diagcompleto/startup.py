@@ -7,12 +7,12 @@ não apaga a entrada, apenas a marca como desativada — e ela aparece como
 from __future__ import annotations
 
 import logging
-import os
 import time
 import winreg
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import winsec
 from .utils import is_admin
 
 log = logging.getLogger("DiagCompleto.startup")
@@ -68,17 +68,12 @@ def _is_enabled(hive: int, subkey: str, name: str) -> bool:
 
 
 def _startup_folders() -> list[tuple[int, Path, str]]:
-    folders = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        folders.append((winreg.HKEY_CURRENT_USER,
-                        Path(appdata) / r"Microsoft\Windows\Start Menu\Programs\Startup", "Pasta Inicializar (usuário)"))
-    program_data = os.environ.get("ProgramData")
-    if program_data:
-        folders.append((winreg.HKEY_LOCAL_MACHINE,
-                        Path(program_data) / r"Microsoft\Windows\Start Menu\Programs\StartUp",
-                        "Pasta Inicializar (todos)"))
-    return folders
+    return [
+        (winreg.HKEY_CURRENT_USER, Path(winsec.roaming_appdata()) / r"Microsoft\Windows\Start Menu\Programs\Startup",
+         "Pasta Inicializar (usuário)"),
+        (winreg.HKEY_LOCAL_MACHINE, Path(winsec.program_data()) / r"Microsoft\Windows\Start Menu\Programs\StartUp",
+         "Pasta Inicializar (todos)"),
+    ]
 
 
 def list_entries() -> list[StartupEntry]:

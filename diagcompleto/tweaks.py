@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .utils import app_data_dir, is_admin, run_command, system_tool
+from .utils import app_data_dir, is_admin, run_command, system_tool, user_data_dir
 
 log = logging.getLogger("DiagCompleto.tweaks")
 
@@ -33,22 +33,42 @@ class TweakError(RuntimeError):
 
 # --------------------------------------------------------------------------- backup
 
+MAX_BACKUP_BYTES = 1024 * 1024
+
+
 class BackupStore:
     """Guarda o estado original de cada ajuste. Nunca sobrescreve um backup existente,
-    para que reaplicar um ajuste não apague a referência do estado original."""
+    para que reaplicar um ajuste não apague a referência do estado original.
 
-    def __init__(self, path: Path | None = None):
+    Elevado, o backup fica na pasta protegida do programa. O backup antigo do usuário
+    (gravável por qualquer processo comum) só é lido, e todo conteúdo é validado contra
+    a definição do ajuste antes de ser restaurado."""
+
+    def __init__(self, path: Path | None = None, fallback: Path | None = None):
         self.path = path or app_data_dir() / "tweaks_backup.json"
+        if fallback is None and path is None and is_admin():
+            legacy = user_data_dir() / "tweaks_backup.json"
+            fallback = legacy if legacy != self.path else None
+        self.fallback = fallback
         self._lock = threading.Lock()
 
-    def _load(self) -> dict[str, Any]:
-        if not self.path.exists():
+    @staticmethod
+    def _read(path: Path) -> dict[str, Any]:
+        if not path.exists():
             return {}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            log.exception("Backup de ajustes ilegível: %s", self.path)
+            if path.stat().st_size > MAX_BACKUP_BYTES:
+                raise ValueError("arquivo grande demais")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("formato inválido")
+            return data
+        except (OSError, ValueError):
+            log.exception("Backup de ajustes ilegível: %s", path)
             raise TweakError("O arquivo de backup dos ajustes está corrompido; nada foi alterado.")
+
+    def _load(self) -> dict[str, Any]:
+        return self._read(self.path)
 
     def _write(self, data: dict[str, Any]) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -57,7 +77,13 @@ class BackupStore:
 
     def get(self, tweak_id: str) -> Any:
         with self._lock:
-            return self._load().get(tweak_id)
+            value = self._load().get(tweak_id)
+            if value is None and self.fallback is not None:
+                try:
+                    value = self._read(self.fallback).get(tweak_id)
+                except TweakError:
+                    value = None
+            return value
 
     def save_if_absent(self, tweak_id: str, value: Any) -> None:
         with self._lock:
@@ -129,6 +155,20 @@ def _deserialize(value: Any) -> Any:
     return bytes.fromhex(value["hex"]) if isinstance(value, dict) and "hex" in value else value
 
 
+def _valid_registry_data(kind: Any, value: Any) -> bool:
+    if kind in (winreg.REG_DWORD, winreg.REG_DWORD_BIG_ENDIAN):
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFF
+    if kind == winreg.REG_QWORD:
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFFFFFFFFFF
+    if kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ):
+        return isinstance(value, str) and len(value) <= 32767
+    if kind == winreg.REG_MULTI_SZ:
+        return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    if kind == winreg.REG_BINARY:
+        return isinstance(value, bytes) and len(value) <= 65536
+    return False
+
+
 # --------------------------------------------------------------------------- tipos de ajuste
 
 @dataclass
@@ -190,13 +230,45 @@ class RegistryTweak(Tweak):
         backup = store.get(self.id)
         if backup is None:
             raise TweakError("Não há backup deste ajuste (não foi aplicado por este programa).")
-        for item in backup:
-            if item["existed"]:
-                write_value(item["hive"], item["key"], item["name"], _deserialize(item["value"]), item["kind"])
+        actions = self._validated_backup(backup)
+        for v, existed, value, kind in actions:
+            if existed:
+                write_value(v.hive, v.key, v.name, value, kind)
             else:
-                delete_value(item["hive"], item["key"], item["name"])
+                delete_value(v.hive, v.key, v.name)
         store.remove(self.id)
         log.info("Ajuste revertido: %s", self.id)
+
+    def _validated_backup(self, backup: Any) -> list[tuple[RegValue, bool, Any, int | None]]:
+        """Confere o backup antes de restaurar. Chave e nome vêm sempre da definição do
+        ajuste, nunca do arquivo: um backup adulterado não consegue escrever em outra
+        parte do registro (ex.: HKLM) com privilégios de administrador."""
+        invalid = TweakError("O backup deste ajuste é inválido ou foi adulterado; nada foi alterado.")
+        if not isinstance(backup, list):
+            raise invalid
+        expected = {(v.hive, v.key.lower(), v.name.lower()): v for v in self.values}
+        actions = []
+        seen = set()
+        for item in backup:
+            if not isinstance(item, dict):
+                raise invalid
+            ident = (item.get("hive"), str(item.get("key", "")).lower(), str(item.get("name", "")).lower())
+            definition = expected.get(ident)
+            existed = item.get("existed")
+            if definition is None or ident in seen or not isinstance(existed, bool):
+                raise invalid
+            seen.add(ident)
+            value, kind = None, None
+            if existed:
+                kind = item.get("kind")
+                try:
+                    value = _deserialize(item.get("value"))
+                except (ValueError, TypeError, KeyError):
+                    raise invalid
+                if not _valid_registry_data(kind, value):
+                    raise invalid
+            actions.append((definition, existed, value, kind))
+        return actions
 
 
 @dataclass
@@ -243,7 +315,7 @@ class HibernationTweak(Tweak):
     def revert(self, store: BackupStore) -> None:
         self._check_admin()
         backup = store.get(self.id)
-        if backup is not None and not backup.get("enabled", True):
+        if isinstance(backup, dict) and backup.get("enabled") is False:
             store.remove(self.id)
             return
         code, out = run_command([system_tool("powercfg.exe"), "/hibernate", "on"], timeout=60)
@@ -276,7 +348,9 @@ class PowerPlanTweak(Tweak):
 
     def revert(self, store: BackupStore) -> None:
         backup = store.get(self.id)
-        plan = (backup or {}).get("plan") or "381b4222-f694-41f0-9685-ff5bb260df2e"  # Equilibrado
+        plan = backup.get("plan") if isinstance(backup, dict) else None
+        if not isinstance(plan, str) or not GUID_RE.fullmatch(plan):
+            plan = "381b4222-f694-41f0-9685-ff5bb260df2e"  # Equilibrado
         code, out = run_command([system_tool("powercfg.exe"), "/setactive", plan], timeout=30)
         if code != 0:
             raise TweakError(out.strip() or "powercfg falhou")
