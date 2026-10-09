@@ -1,0 +1,143 @@
+# DiagCompleto
+
+Diagnóstico de saúde e otimizador para Windows 10/11, feito para **deixar o sistema limpo e leve sem
+correr riscos**.
+
+- Escrito em Python usando só a biblioteca padrão (tkinter, winreg, ctypes), **sem dependências externas**.
+- Usa as ferramentas oficiais do próprio Windows: PowerShell/CIM, DISM, SFC e powercfg.
+- Toda otimização tem backup e pode ser revertida.
+
+## Sumário
+
+- [Requisitos](#requisitos)
+- [Instalação](#instalação)
+- [Como usar](#como-usar)
+- [Recursos](#recursos)
+- [Regras de segurança](#regras-de-segurança)
+- [Estrutura do projeto](#estrutura-do-projeto)
+- [Testes](#testes)
+
+## Requisitos
+
+- Windows 10 ou 11
+- Python 3.10 ou superior
+- Permissão de administrador (opcional, mas recomendada; veja abaixo)
+
+## Instalação
+
+```bat
+git clone https://github.com/<seu-usuario>/DiagCompleto.git
+cd DiagCompleto
+```
+
+Não há nada para instalar: basta ter o Python.
+
+## Como usar
+
+### Interface gráfica
+
+Dê dois cliques em **`Executar.bat`**. Ele abre o programa pedindo permissão de administrador.
+
+Para abrir sem elevação, use `python main.py`.
+
+### Linha de comando
+
+| Comando | O que faz |
+| --- | --- |
+| `python main.py saude` | Diagnóstico de saúde no terminal |
+| `python main.py saude --html` | Diagnóstico + relatório HTML aberto no navegador |
+| `python main.py analisar` | Espaço recuperável por categoria |
+| `python main.py limpar` | Limpa as categorias recomendadas (pede confirmação) |
+| `python main.py limpar -y` | Limpa sem pedir confirmação |
+| `python main.py limpar <ids>` | Limpa só as categorias indicadas |
+| `python main.py ajustes` | Estado de cada otimização |
+| `python main.py inicializacao` | Programas que iniciam com o Windows |
+| `python main.py --help` | Lista todos os comandos |
+
+### Sem administrador
+
+O programa funciona sem administrador, mas com limitações:
+
+- não lê alguns sensores (temperatura, desgaste do SSD, capacidade original da bateria);
+- desativa as ações que mexem no sistema.
+
+## Recursos
+
+| Aba | O que faz |
+| --- | --- |
+| **Saúde do PC** | Analisa discos (saúde, desgaste, temperatura, erros, previsão S.M.A.R.T.), espaço livre, RAM e módulos, CPU e temperatura, placas de vídeo e idade do driver, e bateria (capacidade vs. original e ciclos). Verifica também erros de hardware WHEA, telas azuis, desligamentos inesperados, erros de disco, dispositivos com problema, antivírus e reinicialização pendente. Dá uma nota de 0 a 100 e exporta relatório HTML. |
+| **Limpeza** | Temporários, cache de miniaturas, cache de navegadores, relatórios de erro, dumps, logs antigos, cache de shaders, cache do Windows Update e Lixeira. Mostra o tamanho antes de limpar. |
+| **Otimizações** | Ajustes de privacidade, interface e desempenho, todos com backup e botão "Reverter". |
+| **Inicialização** | Ativa e desativa programas de inicialização. |
+| **Manutenção** | DISM (limpeza de componentes, análise, reparo), SFC, Otimizar Unidades, limpar DNS e criar ponto de restauração. |
+
+## Regras de segurança
+
+### Limpeza
+
+- Só apaga dentro de uma lista fechada de pastas de cache e temporários. Raízes perigosas (disco,
+  Windows, System32, perfil do usuário, Program Files…) são recusadas mesmo que apareçam por engano.
+- Nunca segue links simbólicos nem junções, então não há como "escapar" para outra pasta.
+- Temporários com menos de 24 h são preservados. Vale a data mais recente entre criação e modificação,
+  o que protege instaladores em andamento. Arquivos em uso são ignorados.
+- Nos navegadores, apaga apenas o cache. Senhas, cookies, histórico e extensões nunca são tocados.
+- Itens com efeito colateral (Lixeira, dumps de tela azul, cache de shaders, Windows Update) vêm
+  desmarcados por padrão.
+
+### Otimizações
+
+- Antes de qualquer mudança, o valor original de cada chave é salvo em
+  `%LOCALAPPDATA%\DiagCompleto\tweaks_backup.json`.
+- Reverter restaura exatamente o estado anterior, inclusive apagando valores que não existiam.
+  Reaplicar nunca sobrescreve o backup original.
+- Há a opção de criar um ponto de restauração do Windows antes de aplicar.
+- Programas de inicialização usam o mesmo mecanismo do Gerenciador de Tarefas (`StartupApproved`).
+  Nada é apagado.
+
+### O que o DiagCompleto deliberadamente **não** faz
+
+Coisas comuns em "otimizadores", mas arriscadas ou inúteis:
+
+- **"Limpeza de registro"**: ganho nulo e risco real de quebrar programas.
+- **Limpar a pasta Prefetch**: deixa a abertura de programas *mais lenta*.
+- **Desativar Windows Update, Windows Defender, SysMain ou arquivo de paginação.**
+- **`DISM /ResetBase`**: impediria desinstalar atualizações problemáticas.
+- **Remover drivers ou apps do sistema.**
+
+## Estrutura do projeto
+
+```text
+main.py                       ponto de entrada (GUI sem argumentos, CLI com argumentos)
+Executar.bat                  abre a GUI como administrador
+diagcompleto/
+├── health.py                 coleta (PowerShell/CIM, ctypes) e avaliação da saúde
+├── cleaner.py                alvos de limpeza e regras de segurança
+├── tweaks.py                 otimizações reversíveis e backup
+├── startup.py                programas de inicialização
+├── maintenance.py            DISM, SFC, otimização de unidades, ponto de restauração
+├── report.py                 relatório HTML
+├── utils.py                  privilégios, execução de comandos, formatação e logging
+├── gui.py                    interface tkinter
+└── cli.py                    linha de comando
+tests/                        testes (pytest)
+```
+
+### Arquivos gerados
+
+| O quê | Onde |
+| --- | --- |
+| Logs | `%LOCALAPPDATA%\DiagCompleto\logs` |
+| Relatórios HTML | `%LOCALAPPDATA%\DiagCompleto\relatorios` |
+| Backup das otimizações | `%LOCALAPPDATA%\DiagCompleto\tweaks_backup.json` |
+
+## Testes
+
+```bat
+pip install pytest
+python -m pytest
+```
+
+Os testes não mexem no seu sistema:
+
+- os de limpeza usam pastas temporárias;
+- os de otimização usam uma chave de teste própria, `HKCU\Software\DiagCompletoTest`, removida ao final.

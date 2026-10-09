@@ -1,0 +1,13 @@
+[project]
+name = "diagcompleto"
+version = "1.0.0"
+description = "Otimizador seguro e diagnóstico de saúde para Windows"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
