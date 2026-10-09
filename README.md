@@ -26,8 +26,8 @@ correr riscos**.
 ## Instalação
 
 ```bat
-git clone https://github.com/<seu-usuario>/DiagCompleto.git
-cd DiagCompleto
+git clone https://github.com/gabedossa/Diagpc.git
+cd Diagpc
 ```
 
 Não há nada para instalar: basta ter o Python.
