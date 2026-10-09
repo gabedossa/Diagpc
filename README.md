@@ -160,7 +160,7 @@ A pasta depende de como o programa foi aberto:
 | Administrador | `%ProgramData%\DiagCompleto` (protegida) |
 | Usuário comum | `%LOCALAPPDATA%\DiagCompleto` |
 
-Dentro dela ficam `logs\`, `relatorios\` e `tweaks_backup.json`. Como administrador, um backup antigo
+Dentro dela ficam `logs\`, `relatorios\`, `tweaks_backup.json` e `settings.json` (tema escolhido). Como administrador, um backup antigo
 em `%LOCALAPPDATA%` ainda é lido (e conferido), mas nunca alterado.
 
 ## Testes
