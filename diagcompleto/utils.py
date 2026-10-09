@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import winreg
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,15 +74,76 @@ def is_admin() -> bool:
         return False
 
 
+def _parse_version(tag: str) -> tuple[int, ...] | None:
+    match = re.match(r"(\d+)\.(\d+)", tag)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def trusted_pythonw() -> str | None:
+    """pythonw.exe de uma instalação "para todos os usuários" (3.10+), ou None.
+
+    O interpretador que vai rodar elevado não pode vir do PATH nem de sys.executable:
+    um processo comum do usuário controla o PATH (HKCU) e pode ter instalado o Python
+    numa pasta que ele mesmo altera. O registro do HKLM e a pasta Program Files só
+    administradores alteram. Prefere a mesma versão do Python em uso.
+    """
+    candidates: list[tuple[tuple[int, ...], str]] = []
+    root = r"SOFTWARE\Python\PythonCore"
+    for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+        try:
+            core = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, root, 0, winreg.KEY_READ | view)
+        except OSError:
+            continue
+        with core:
+            index = 0
+            while True:
+                try:
+                    tag = winreg.EnumKey(core, index)
+                except OSError:
+                    break
+                index += 1
+                version = _parse_version(tag)
+                if version is None or version < (3, 10):
+                    continue
+                try:
+                    with winreg.OpenKey(core, rf"{tag}\InstallPath") as install:
+                        try:
+                            exe, _ = winreg.QueryValueEx(install, "WindowedExecutablePath")
+                        except OSError:
+                            folder, _ = winreg.QueryValueEx(install, "")
+                            exe = os.path.join(folder, "pythonw.exe")
+                except OSError:
+                    continue
+                if not isinstance(exe, str) or not os.path.isfile(exe):
+                    continue
+                real = os.path.realpath(exe)
+                if any(winsec.is_within(real, base, strict=True) for base in winsec.program_files_dirs()):
+                    candidates.append((version, real))
+    if not candidates:
+        return None
+    current = sys.version_info[:2]
+    candidates.sort(key=lambda c: (c[0] == current, c[0]), reverse=True)
+    return candidates[0][1]
+
+
 def relaunch_as_admin() -> bool:
-    """Reabre o programa pedindo elevação (UAC). Retorna True se o novo processo foi iniciado."""
+    """Reabre o programa pedindo elevação (UAC). Retorna True se o novo processo foi iniciado.
+
+    Lança CommandError se não houver um Python confiável para rodar elevado."""
     if getattr(sys, "frozen", False):
+        executable = sys.executable
         params = subprocess.list2cmdline(sys.argv[1:])
     else:
+        executable = trusted_pythonw()
+        if executable is None:
+            raise CommandError(
+                "Não foi encontrado um Python 3.10+ instalado \"para todos os usuários\" em Program Files.\n\n"
+                "Por segurança, o DiagCompleto só roda como administrador com um Python que apenas "
+                "administradores podem alterar. Reinstale o Python marcando \"Install for all users\".")
         params = subprocess.list2cmdline([os.path.abspath(sys.argv[0]), *sys.argv[1:]])
     # Pasta de trabalho no System32: o processo elevado não procura executáveis e DLLs
     # na pasta do usuário de onde foi chamado.
-    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, winsec.system_dir(), 1)
+    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, winsec.system_dir(), 1)
     return result > 32
 
 

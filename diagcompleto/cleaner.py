@@ -160,7 +160,7 @@ def iter_files(location: Location, min_age_hours: float = 0,
             yield Path(entry.path), st.st_size
 
 
-def _delete_file(path: Path, root: Path) -> bool:
+def _delete_file(path: Path, root: Path) -> bool | None:
     # Exclusão pelo handle, conferindo o caminho real: se uma pasta intermediária for trocada
     # por junção depois da varredura, o arquivo de fora da raiz não é apagado.
     return winsec.delete_within(path, winsec.norm(root))
@@ -195,11 +195,13 @@ def clean_target(target: CleanTarget) -> CleanResult:
     for location in target.locations():
         dirs: list[Path] = []
         for path, size in list(iter_files(location, target.min_age_hours, now, dirs)):
-            if _delete_file(path, location.root):
+            outcome = _delete_file(path, location.root)
+            if outcome:
                 result.freed += size
                 result.deleted += 1
-            else:
+            elif outcome is False:
                 result.skipped += 1
+            # None: o próprio programa dono já apagou; não conta como liberado nem como ignorado.
         if location.removes_dirs:
             _remove_empty_dirs(dirs, location.root, target.min_age_hours, now)
     log.info("Limpeza %s: %d arquivos, %d bytes, %d ignorados",
@@ -212,7 +214,7 @@ def _remove_empty_dirs(dirs: list[Path], root: Path, min_age_hours: float, now: 
     real_root = winsec.norm(root)
     for directory in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
         try:
-            if min_age_hours and now - os.lstat(directory).st_mtime < min_age_hours * 3600:
+            if min_age_hours and now - _age_reference(os.lstat(directory)) < min_age_hours * 3600:
                 continue
         except OSError:
             continue
@@ -311,7 +313,7 @@ def build_targets() -> list[CleanTarget]:
         CleanTarget(
             "thumbnails", "Cache de miniaturas",
             "Miniaturas de imagens/vídeos do Explorador. São recriadas automaticamente.",
-            lambda: _existing(local / "Microsoft" / "Windows" / "Explorer" if local else None,
+            lambda: _existing(local / "Microsoft" / "Windows" / "Explorer",
                               pattern="thumbcache_*.db", recursive=False)),
         CleanTarget(
             "browser_cache", "Cache dos navegadores",
@@ -322,13 +324,13 @@ def build_targets() -> list[CleanTarget]:
             "error_reports", "Relatórios de erro do Windows",
             "Relatórios de falhas já enviados/arquivados (WER).",
             lambda: _existing(
-                local / "Microsoft" / "Windows" / "WER" if local else None,
+                local / "Microsoft" / "Windows" / "WER",
                 _program_data() / "Microsoft" / "Windows" / "WER" / "ReportArchive",
                 _program_data() / "Microsoft" / "Windows" / "WER" / "ReportQueue")),
         CleanTarget(
             "app_crash_dumps", "Despejos de memória de aplicativos",
             "Arquivos .dmp gerados quando programas travam (%LOCALAPPDATA%\\CrashDumps).",
-            lambda: _existing(local / "CrashDumps" if local else None)),
+            lambda: _existing(local / "CrashDumps")),
         CleanTarget(
             "delivery_logs", "Logs antigos do Windows",
             "Arquivos .log/.etl com mais de 30 dias em C:\\Windows\\Logs e Panther.",
@@ -338,11 +340,8 @@ def build_targets() -> list[CleanTarget]:
         CleanTarget(
             "shader_cache", "Cache de shaders (DirectX/NVIDIA/AMD)",
             "Recriado automaticamente; jogos podem engasgar levemente na primeira execução após limpar.",
-            lambda: _existing(local / "D3DSCache" if local else None,
-                              local / "NVIDIA" / "DXCache" if local else None,
-                              local / "NVIDIA" / "GLCache" if local else None,
-                              local / "AMD" / "DxCache" if local else None,
-                              local / "AMD" / "GLCache" if local else None),
+            lambda: _existing(local / "D3DSCache", local / "NVIDIA" / "DXCache", local / "NVIDIA" / "GLCache",
+                              local / "AMD" / "DxCache", local / "AMD" / "GLCache"),
             default_selected=False),
         CleanTarget(
             "windows_update", "Cache de downloads do Windows Update",

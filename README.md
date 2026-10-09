@@ -36,7 +36,11 @@ Não há nada para instalar: basta ter o Python.
 > Coloque essa pasta num local que só administradores podem alterar, como
 > `C:\Program Files\DiagCompleto`. Se ela ficar em Documentos ou Downloads, qualquer programa que
 > rode como você pode editar os arquivos `.py` e esperar você abrir o DiagCompleto como administrador.
-> O mesmo vale para o Python: prefira a instalação "para todos os usuários".
+>
+> Para rodar como administrador (pelo `Executar.bat` ou pelo botão "Executar como admin"), o Python
+> precisa estar instalado **para todos os usuários**, em Program Files (opção *Install for all users*
+> do instalador). O interpretador é localizado pelo registro `HKLM`, nunca pelo `PATH`, que qualquer
+> programa rodando como você consegue alterar. Sem essa instalação, o programa avisa e não eleva.
 
 ## Como usar
 

@@ -13,7 +13,7 @@ from tkinter import messagebox, ttk
 from typing import Any, Callable
 
 from . import __version__, cleaner, health, maintenance, report, startup, tweaks
-from .utils import app_data_dir, format_bytes, is_admin, open_file, relaunch_as_admin
+from .utils import CommandError, app_data_dir, format_bytes, is_admin, open_file, relaunch_as_admin
 
 log = logging.getLogger("DiagCompleto.gui")
 
@@ -565,7 +565,12 @@ class App(tk.Tk):
             widget.scroll(event)
 
     def _elevate(self) -> None:
-        if relaunch_as_admin():
+        try:
+            started = relaunch_as_admin()
+        except CommandError as exc:
+            messagebox.showerror("Executar como administrador", str(exc), parent=self)
+            return
+        if started:
             self.destroy()
 
     # ------------------------------------------------------------------ tarefas em segundo plano
@@ -588,20 +593,28 @@ class App(tk.Tk):
         self._events.put(("call", func, args, None))
 
     def _process_events(self) -> None:
+        # Reagenda sempre: se um callback falhar, a fila não pode parar de ser lida
+        # (a interface ficaria "ocupada" para sempre).
         try:
             while True:
-                kind, func, payload, error = self._events.get_nowait()
-                if kind == "call":
-                    func(*payload)
-                    continue
-                self._set_busy(-1)
-                if error is not None:
-                    messagebox.showerror("Erro", f"{error}", parent=self)
-                elif func is not None:
-                    func(payload)
-        except queue.Empty:
-            pass
-        self.after(100, self._process_events)
+                try:
+                    kind, func, payload, error = self._events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if kind == "call":
+                        func(*payload)
+                        continue
+                    self._set_busy(-1)
+                    if error is not None:
+                        messagebox.showerror("Erro", f"{error}", parent=self)
+                    elif func is not None:
+                        func(payload)
+                except Exception as exc:
+                    log.exception("Falha ao processar evento da interface")
+                    messagebox.showerror("Erro", f"{exc}", parent=self)
+        finally:
+            self.after(100, self._process_events)
 
     def _set_busy(self, delta: int, label: str | None = None) -> None:
         self._busy = max(0, self._busy + delta)

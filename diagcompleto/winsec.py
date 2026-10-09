@@ -169,6 +169,16 @@ def protected_dirs() -> frozenset[str]:
     return frozenset(norm(p) for p in paths)
 
 
+@lru_cache(maxsize=None)
+def program_files_dirs() -> tuple[str, ...]:
+    """Pastas Program Files (64 e 32 bits), que só administradores alteram."""
+    found = (_known_folder(folder_id) for folder_id in (
+        "6D809377-6AF0-444B-8957-A3773F02200E",   # Program Files (x64)
+        "905E63B6-C1BF-494E-B29C-65B732D3D21A",   # Program Files
+        "7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E"))  # Program Files (x86)
+    return tuple(dict.fromkeys(norm(path) for path in found if path))
+
+
 def allowed_bases() -> list[str]:
     """Únicas árvores onde a limpeza pode agir."""
     return [norm(profile_dir()), norm(windows_dir()), norm(program_data())]
@@ -219,8 +229,10 @@ def _mark_for_deletion(handle: int) -> bool:
     return bool(_kernel32.SetFileInformationByHandle(handle, 4, ctypes.byref(legacy), ctypes.sizeof(legacy)))
 
 
-def delete_within(path: str | os.PathLike, root: str, is_dir: bool = False) -> bool:
+def delete_within(path: str | os.PathLike, root: str, is_dir: bool = False) -> bool | None:
     """Apaga path somente se o caminho real (após abrir) estiver estritamente dentro de root.
+
+    Retorna True se apagou, False se recusou ou falhou e None se o item já não existia.
 
     Abrir primeiro e conferir o handle elimina a corrida em que alguém troca uma pasta
     intermediária por uma junção entre a varredura e a exclusão.
@@ -229,7 +241,7 @@ def delete_within(path: str | os.PathLike, root: str, is_dir: bool = False) -> b
     access = 0x00010000 | 0x80 | 0x00100000  # DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
     handle = _kernel32.CreateFileW(os.fspath(path), access, 0x7, None, 3, flags, None)  # OPEN_EXISTING
     if handle == INVALID_HANDLE_VALUE or handle is None:
-        return ctypes.get_last_error() in (2, 3)  # já não existe
+        return None if ctypes.get_last_error() in (2, 3) else False  # 2/3: já não existe
     try:
         info = _ByHandleFileInformation()
         if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
