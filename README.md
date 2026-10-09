@@ -44,6 +44,8 @@ Não há nada para instalar: basta ter o Python.
 
 Dê dois cliques em **`Executar.bat`**. Ele abre o programa pedindo permissão de administrador.
 
+A interface abre no tema escuro. Para trocar, use **Tema claro / Tema escuro** no rodapé da barra lateral; a escolha fica salva.
+
 Para abrir sem elevação, use `python main.py`.
 
 ### Linha de comando
